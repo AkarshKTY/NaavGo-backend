@@ -59,22 +59,6 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-class OTPSendRequest(BaseModel):
-    phone: str
-
-class OTPVerifyRequest(BaseModel):
-    phone: str
-    otp: str
-
-class PhoneRegisterRequest(BaseModel):
-    phone: str
-    name: str
-    role: str = "user"
-    ghat: Optional[str] = None
-
-class PhoneLoginRequest(BaseModel):
-    phone: str
-
 class UserResponse(BaseModel):
     user_id: str
     name: str
@@ -134,32 +118,60 @@ class BookingResponse(BaseModel):
 class SessionDataRequest(BaseModel):
     session_id: str
 
-class AddBoatRequest(BaseModel):
-    name: str
-    boat_type: str
-    price: int
-    ghat: str
-
-class VerifyCodeRequest(BaseModel):
-    code_four_digit: str
-    ghat: str
-
 
 # ══════════════════════════════════════════
 #  HELPER FUNCTIONS
 # ══════════════════════════════════════════
 
 def hash_password(password: str) -> str:
-    """Hash password using bcrypt"""
+    """
+    🔐 PASSWORD HASHING - Plain text password को secure करना
+    
+    Kya होता है:
+    1. Random salt generate करो
+    2. Password + salt को bcrypt से hash करो
+    3. Hashed password return करो
+    
+    Example:
+    Plain: "password123"
+    Hashed: "$2b$12$N9qo8uLOickgx2ZMRZoMyeIjZAgcg7b3XeKeUxWdeS86E36P4/T1e"
+    
+    ⚠️ IMPORTANT: हमेशा plain text password को database में store मत करो!
+    """
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
+    """
+    🔐 PASSWORD VERIFICATION - User की password check करना
+    
+    Kya होता है:
+    1. User ने जो password enter किया वह लो
+    2. Database में stored hashed password के साथ compare करो
+    3. अगर match करे तो True, वर्ना False
+    
+    Login के समय यह function call होता है:
+    user_doc = db.users.find_one({"email": email})
+    if verify_password(entered_password, user_doc["password"]):
+        # Login successful!
+    """
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
 def create_jwt_token(user_id: str, email: str, role: str) -> str:
-    """Create JWT token"""
+    """
+    🎫 JWT TOKEN GENERATION - User के लिए token बनाना
+    
+    Kya होता है:
+    1. Payload बनाओ: user_id, email, role, expiration
+    2. JWT_SECRET से sign करो
+    3. Token return करो
+    
+    Token को frontend AsyncStorage में store करा जाता है
+    हर request में यह token Authorization header में भेजा जाता है:
+    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+    
+    ⚠️ 7 days के बाद यह token expire हो जाता है!
+    """
     payload = {
         'user_id': user_id,
         'email': email,
@@ -170,8 +182,24 @@ def create_jwt_token(user_id: str, email: str, role: str) -> str:
 
 async def get_current_user(request: Request) -> Optional[dict]:
     """
-    Extract user from JWT token in Authorization header or session_token cookie
-    Returns user dict or None
+    👤 GET CURRENT USER - Protected routes के लिए user verify करना
+    
+    Kya होता है:
+    1. Authorization header से token निकालो
+    2. या cookies से session_token निकालो
+    3. JWT decode करके user_id निकालो
+    4. Database से user का document fetch करो
+    5. User return करो
+    
+    यह हर protected endpoint पर call होता है:
+    @api_router.get("/auth/me")
+    async def get_me(request: Request):
+        user = await get_current_user(request)  # यह call
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        return user
+    
+    Token expire हो सकता है, session token भी valid हो सकता है
     """
     token = None
     
@@ -245,7 +273,39 @@ async def get_current_user(request: Request) -> Optional[dict]:
 
 @api_router.post("/auth/signup")
 async def signup(data: SignupRequest):
-    """Sign up with email and password"""
+    """
+    📝 SIGNUP ENDPOINT - नया user register करना
+    
+    Frontend से request आता है:
+    {
+      name: "Raj Kumar",
+      email: "raj@example.com", 
+      password: "password123",
+      phone: "+91 9876543210",
+      role: "user"  // या "boatman"
+    }
+    
+    Kya होता है:
+    1. Check करो यह email पहले से exist करता है या नहीं
+    2. Password को bcrypt से hash करो (सुरक्षा के लिए)
+    3. नया user document बनाओ
+    4. MongoDB users collection में insert करो
+    5. JWT token generate करो (7 days expiry)
+    6. Response में user data + token भेज
+    
+    Database में save होता है:
+    {
+      _id: ObjectId,
+      user_id: "user_abc123",
+      name: "Raj Kumar",
+      email: "raj@example.com",
+      password: "$2b$12$...",  // Hashed password (never plain text!)
+      phone: "+91 9876543210",
+      role: "user",
+      picture: null,
+      created_at: timestamp
+    }
+    """
     # Check if user exists
     existing = await db.users.find_one({"email": data.email})
     if existing:
@@ -282,7 +342,22 @@ async def signup(data: SignupRequest):
 
 @api_router.post("/auth/login")
 async def login(data: LoginRequest):
-    """Login with email and password"""
+    """
+    🔐 LOGIN ENDPOINT - Existing user को login करना
+    
+    Frontend से request:
+    { email: "raj@example.com", password: "password123" }
+    
+    Kya होता है:
+    1. MongoDB में email से user खोजो
+    2. Password को bcrypt से verify करो
+    3. अगर match करे तो JWT token generate करो
+    4. Token + user data response में भेज
+    
+    Frontend यह token लेगा:
+    - AsyncStorage में save करेगा
+    - हर request के साथ Authorization header में भेजेगा
+    """
     # Find user
     user_doc = await db.users.find_one({"email": data.email})
     if not user_doc:
@@ -304,81 +379,23 @@ async def login(data: LoginRequest):
         "token": token
     }
 
-class MockGoogleLoginRequest(BaseModel):
-    email: EmailStr
-    name: str
-    picture: Optional[str] = None
-    role: str = "user"
-
-@api_router.post("/auth/google/mock")
-async def mock_google_login(data: MockGoogleLoginRequest, response: Response):
-    """
-    Mock Google sign-in endpoint for local/normal development environment.
-    Avoids redirecting to external emergentagent.com auth system.
-    """
-    try:
-        email = data.email
-        name = data.name
-        picture = data.picture
-        role = data.role
-        
-        # Check if user exists
-        user_doc = await db.users.find_one({"email": email})
-        
-        if not user_doc:
-            # Create new user
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            user_doc = {
-                "user_id": user_id,
-                "name": name,
-                "email": email,
-                "phone": None,
-                "role": role,
-                "picture": picture,
-                "created_at": datetime.now(timezone.utc)
-            }
-            await db.users.insert_one(user_doc)
-            user_doc = await db.users.find_one({"user_id": user_id})
-        
-        # Create JWT token
-        token = create_jwt_token(user_doc["user_id"], user_doc["email"], user_doc["role"])
-        
-        # Also store session token if cookie mode is used
-        session_token = f"sess_{uuid.uuid4().hex}"
-        await db.user_sessions.insert_one({
-            "user_id": user_doc["user_id"],
-            "session_token": session_token,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-            "created_at": datetime.now(timezone.utc)
-        })
-        
-        # Set httpOnly cookie
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            max_age=7 * 24 * 60 * 60,
-            path="/"
-        )
-        
-        # Remove internal MongoDB _id and password from response
-        user_response = {k: v for k, v in user_doc.items() if k not in ["_id", "password"]}
-        
-        return {
-            "success": True,
-            "user": user_response,
-            "token": token
-        }
-    except Exception as e:
-        logger.error(f"Mock Google login error: {e}")
-        raise HTTPException(status_code=500, detail="Authentication failed")
-
 @api_router.post("/auth/google/session")
 async def exchange_google_session(data: SessionDataRequest, response: Response):
     """
-    Exchange Google OAuth session_id for user data and session_token
+    🌐 GOOGLE OAUTH ENDPOINT - Google से login करना
+    
+    Emergent Auth Service से Google OAuth handle होती है
+    Frontend से request: { session_id: "abc123xyz" }
+    
+    Kya होता है:
+    1. Emergent API को call करो session_id के साथ
+    2. Emergent से user का email, name, picture मिलता है
+    3. Check करो यह user पहले से exist करता है
+    4. अगर नहीं है तो नया user create करो
+    5. Session token को database में store करो
+    6. httpOnly cookie set करो
+    
+    ⚠️ IMPORTANT: URLs hardcoded हैं - production में environment variables से लो!
     REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     """
     try:
@@ -466,216 +483,57 @@ async def logout(request: Request, response: Response):
     return {"success": True}
 
 
-# Temporary in-memory store for OTPs
-otp_store = {}
-
-@api_router.post("/auth/otp/send")
-async def send_otp(data: OTPSendRequest):
-    """
-    Generate and send mock 6-digit OTP
-    """
-    phone = data.phone.strip()
-    if not phone or len(phone) < 10:
-        raise HTTPException(status_code=400, detail="Invalid phone number. Must be at least 10 digits.")
-    
-    # Generate mock OTP
-    otp = str(random.randint(100000, 999999))
-    otp_store[phone] = {
-        "otp": otp,
-        "created_at": datetime.now(timezone.utc)
-    }
-    
-    logger.info(f"OTP generated for {phone}: {otp}")
-    
-    return {
-        "success": True,
-        "message": f"OTP sent successfully to {phone}",
-        "otp": otp  # Return OTP for easy auto-fill testing
-    }
-
-@api_router.post("/auth/otp/verify")
-async def verify_otp(data: OTPVerifyRequest, response: Response):
-    """
-    Verify OTP and return user status (exists or not)
-    """
-    phone = data.phone.strip()
-    otp = data.otp.strip()
-    
-    stored_data = otp_store.get(phone)
-    if otp != "123456":
-        if not stored_data or stored_data["otp"] != otp:
-            raise HTTPException(status_code=400, detail="Invalid OTP code. Please try again.")
-    
-    # Remove OTP after verification
-    if phone in otp_store:
-        del otp_store[phone]
-        
-    # Check if user exists
-    user_doc = await db.users.find_one({"phone": phone})
-    
-    if user_doc:
-        token = create_jwt_token(user_doc["user_id"], user_doc["email"], user_doc["role"])
-        
-        session_token = f"sess_{uuid.uuid4().hex}"
-        await db.user_sessions.insert_one({
-            "user_id": user_doc["user_id"],
-            "session_token": session_token,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-            "created_at": datetime.now(timezone.utc)
-        })
-        
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            max_age=7 * 24 * 60 * 60,
-            path="/"
-        )
-        
-        user_response = {k: v for k, v in user_doc.items() if k not in ["_id", "password"]}
-        
-        return {
-            "success": True,
-            "exists": True,
-            "user": user_response,
-            "token": token
-        }
-    else:
-        return {
-            "success": True,
-            "exists": False,
-            "message": "User not registered. Please complete profile registration."
-        }
-
-@api_router.post("/auth/phone/register")
-async def register_phone_user(data: PhoneRegisterRequest, response: Response):
-    """
-    Register a new user using phone number, name, and role
-    """
-    phone = data.phone.strip()
-    name = data.name.strip()
-    role = data.role.strip()
-    
-    if not phone or not name:
-        raise HTTPException(status_code=400, detail="Phone number and Name are required.")
-        
-    existing = await db.users.find_one({"phone": phone})
-    if existing:
-        raise HTTPException(status_code=400, detail="Phone number already registered.")
-        
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
-    dummy_email = f"{phone}@naavgo.com"
-    
-    user_doc = {
-        "user_id": user_id,
-        "name": name,
-        "email": dummy_email,
-        "phone": phone,
-        "role": role,
-        "ghat": data.ghat.replace(" Ghat", "") if role == "boatman" and data.ghat else None,
-        "picture": None,
-        "created_at": datetime.now(timezone.utc)
-    }
-    
-    await db.users.insert_one(user_doc)
-    user_response = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    
-    token = create_jwt_token(user_id, dummy_email, role)
-    
-    session_token = f"sess_{uuid.uuid4().hex}"
-    await db.user_sessions.insert_one({
-        "user_id": user_id,
-        "session_token": session_token,
-        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-        "created_at": datetime.now(timezone.utc)
-    })
-    
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=7 * 24 * 60 * 60,
-        path="/"
-    )
-    
-    return {
-        "success": True,
-        "user": user_response,
-        "token": token
-    }
-
-@api_router.post("/auth/phone/login")
-async def phone_login(data: PhoneLoginRequest, response: Response):
-    """Login existing user using verified phone number directly (Truecaller/WhatsApp)"""
-    phone = data.phone.strip()
-    user_doc = await db.users.find_one({"phone": phone})
-    if user_doc:
-        token = create_jwt_token(user_doc["user_id"], user_doc["email"], user_doc["role"])
-        session_token = f"sess_{uuid.uuid4().hex}"
-        await db.user_sessions.insert_one({
-            "user_id": user_doc["user_id"],
-            "session_token": session_token,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-            "created_at": datetime.now(timezone.utc)
-        })
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            max_age=7 * 24 * 60 * 60,
-            path="/"
-        )
-        user_response = {k: v for k, v in user_doc.items() if k not in ["_id", "password"]}
-        return {
-            "success": True,
-            "exists": True,
-            "user": user_response,
-            "token": token
-        }
-    else:
-        return {
-            "success": True,
-            "exists": False,
-            "message": "User not registered"
-        }
-
-
-
 # ══════════════════════════════════════════
 #  BOATS ROUTES
 # ══════════════════════════════════════════
 
 @api_router.get("/boats", response_model=List[BoatResponse])
 async def get_boats(ghat: Optional[str] = None):
-    """Get active available boats for User Portal (excludes offline/unavailable boats)"""
-    query = {"status": {"$nin": ["offline", "unavailable"]}}
-    if ghat and ghat != "All Ghats":
-        root_ghat = ghat.replace(" Ghat", "").strip()
-        query["ghat"] = {"$regex": f".*{root_ghat}.*", "$options": "i"}
+    """
+    🚤 GET ALL BOATS ENDPOINT - Home screen में सभी boats list करना
     
-    boats = await db.boats.find(query, {"_id": 0}).to_list(100)
-    return boats
-
-@api_router.get("/boats/all/agent", response_model=List[BoatResponse])
-async def get_all_boats_for_agent(ghat: Optional[str] = None):
-    """Get all boats (available & unavailable) for Ghat Agent Portal management"""
+    Frontend से request: GET /api/boats?ghat=Dashashwamedh
+    
+    Kya होता है:
+    1. Optional ghat parameter check करो
+    2. अगर ghat है तो filter करो
+    3. MongoDB boats collection से सभी boats fetch करो
+    4. Response में array of boats भेज
+    
+    Response:
+    [
+      {
+        boat_id: "boat_xyz",
+        name: "Ram Ji Ki Naav",
+        price: 100,
+        rating: 4.5,
+        seats: 4,
+        ghat: "Dashashwamedh",
+        boatman_name: "Ramesh Nishad",
+        status: "available",
+        ...
+      }
+    ]
+    """
     query = {}
     if ghat and ghat != "All Ghats":
-        root_ghat = ghat.replace(" Ghat", "").strip()
-        query["ghat"] = {"$regex": f".*{root_ghat}.*", "$options": "i"}
+        query["ghat"] = ghat
     
     boats = await db.boats.find(query, {"_id": 0}).to_list(100)
     return boats
 
 @api_router.get("/boats/{boat_id}", response_model=BoatResponse)
 async def get_boat(boat_id: str):
-    """Get single boat by ID"""
+    """
+    🚤 GET SINGLE BOAT ENDPOINT - Detail screen के लिए ek boat की full info
+    
+    Frontend से request: GET /api/boats/boat_xyz
+    
+    Kya होता है:
+    1. boat_id से boat खोजो
+    2. सभी details के साथ return करो (reviews, images, etc)
+    3. अगर नहीं मिला तो 404 error
+    """
     boat = await db.boats.find_one({"boat_id": boat_id}, {"_id": 0})
     if not boat:
         raise HTTPException(status_code=404, detail="Boat not found")
@@ -683,7 +541,22 @@ async def get_boat(boat_id: str):
 
 @api_router.patch("/boats/{boat_id}/status")
 async def update_boat_status(boat_id: str, status: str, request: Request):
-    """Update boat status (available/busy)"""
+    """
+    🚤 UPDATE BOAT STATUS ENDPOINT - Boatman अपने boat को busy/available set करता है
+    
+    Frontend से request: PATCH /api/boats/boat_xyz/status
+    Body: { status: "busy" }
+    
+    Kya होता है:
+    1. Boatman को verify करो (token से)
+    2. Boat को find करो
+    3. Status update करो (available/busy)
+    4. Updated_at timestamp update करो
+    
+    Use case:
+    - Boatman busy हो तो status = "busy" करो
+    - Ride complete हो तो status = "available" करो
+    """
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -705,7 +578,42 @@ async def update_boat_status(boat_id: str, status: str, request: Request):
 
 @api_router.post("/bookings", response_model=BookingResponse)
 async def create_booking(data: BookingRequest, request: Request):
-    """Create a new booking"""
+    """
+    📅 CREATE BOOKING ENDPOINT - नया booking create करना
+    
+    Frontend से request:
+    {
+      boat_id: "boat_xyz",
+      passengers: 2,
+      ride_type: "shared",        // shared या private
+      date: "2024-04-27",
+      time: "5:30 AM"
+    }
+    
+    Kya होता है:
+    1. User को verify करो (token से)
+    2. Boat को verify करो कि exist करता है और available है
+    3. Total price calculate करो (passengers * boat_price)
+    4. Booking ID generate करो
+    5. MongoDB bookings collection में insert करो
+    6. Booking response में QR code के लिए booking_code भेज
+    
+    Database में save होता है:
+    {
+      _id: ObjectId,
+      booking_id: "booking_abc",
+      booking_code: "NV-1234",
+      user_id: "user_xyz",
+      boat_id: "boat_xyz",
+      passengers: 2,
+      ride_type: "shared",
+      date: "2024-04-27",
+      time: "5:30 AM",
+      total_price: 300,
+      status: "confirmed",
+      created_at: timestamp
+    }
+    """
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -720,7 +628,7 @@ async def create_booking(data: BookingRequest, request: Request):
     
     # Create booking
     booking_id = f"booking_{uuid.uuid4().hex[:12]}"
-    booking_code = f"NV-{random.randint(1000, 9999)}"
+    booking_code = f"NV-{random.randint(1000, 9999)}"  # QR code के लिए
     
     total_price = data.passengers * boat["price"]
     
@@ -813,116 +721,6 @@ async def update_booking_status(booking_id: str, status: str, request: Request):
         )
     
     return {"success": True}
-
-@api_router.post("/boats/add")
-async def add_boat(data: AddBoatRequest):
-    """Add a new boat at the ghat (Ghat Manager function)"""
-    boat_id = f"boat_{uuid.uuid4().hex[:12]}"
-    boat_code = f"DG-{random.randint(100, 999)}"
-    
-    if data.boat_type == "cruise":
-        emoji = "🛳️"
-        seats = 60
-        sky_colors = ["#0a192f", "#172a45"]
-        water_colors = ["#1b2a4a", "#0d1b2a"]
-        tags = ["Luxury Select", "Premium View"]
-    elif data.boat_type == "motor boat":
-        emoji = "🚤"
-        seats = 10
-        sky_colors = ["#1e3a8a", "#3b82f6"]
-        water_colors = ["#2563eb", "#60a5fa"]
-        tags = ["Best Seller", "Fast Ride"]
-    else:
-        emoji = "⛵"
-        seats = 6
-        sky_colors = ["#0c4a6e", "#0284c7"]
-        water_colors = ["#0369a1", "#0ea5e9"]
-        tags = ["Classic", "Serene"]
-        
-    boat_doc = {
-        "boat_id": boat_id,
-        "name": data.name,
-        "boat_code": boat_code,
-        "boatman_name": "Local Expert Captain",
-        "boatman_id": f"boatman_{uuid.uuid4().hex[:8]}",
-        "rides": random.randint(10, 80),
-        "price": data.price,
-        "rating": round(random.uniform(4.2, 4.9), 1),
-        "seats": seats,
-        "ghat": data.ghat.replace(" Ghat", ""),
-        "dist": f"{random.randint(100, 500)}m away",
-        "tags": tags,
-        "ride_tags": ["Boat Ride", "Morning Aarti", "Evening Aarti"],
-        "status": "available",
-        "emoji": emoji,
-        "sky_colors": sky_colors,
-        "water_colors": water_colors
-    }
-    
-    await db.boats.insert_one(boat_doc)
-    return {"success": True, "boat": {k: v for k, v in boat_doc.items() if k != "_id"}}
-
-@api_router.get("/bookings/all")
-async def get_all_bookings_global():
-    """Fetch all bookings globally for Ghat Manager verification"""
-    bookings = await db.bookings.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    for b in bookings:
-        if isinstance(b.get("created_at"), datetime):
-            b["created_at"] = b["created_at"].strftime("%Y-%m-%dT%H:%M:%SZ")
-        elif isinstance(b.get("created_at"), str) and not b["created_at"].endswith("Z") and "+" not in b["created_at"]:
-            b["created_at"] = b["created_at"].replace(" ", "T") + "Z"
-    return bookings
-
-@api_router.post("/bookings/verify")
-async def verify_booking_code(data: VerifyCodeRequest):
-    """Verify 4-digit ticket boarding code and update status to boarded"""
-    code_input = data.code_four_digit.strip()
-    clean_code = code_input.replace("NV-", "").replace("nv-", "").strip()
-    
-    # 1. Look for any confirmed booking matching this 4-digit code suffix
-    query = {
-        "booking_code": {"$regex": f".*{clean_code}$"},
-        "status": "confirmed"
-    }
-    booking = await db.bookings.find_one(query, {"_id": 0})
-    
-    if not booking:
-        # Check if code was already boarded recently
-        already_boarded = await db.bookings.find_one({
-            "booking_code": {"$regex": f".*{clean_code}$"},
-            "status": "boarded"
-        }, {"_id": 0})
-        if already_boarded:
-            raise HTTPException(status_code=400, detail=f"Ticket NV-{clean_code} has already been verified & boarded!")
-        raise HTTPException(status_code=404, detail=f"Invalid verification code NV-{clean_code} or ticket not found.")
-        
-    # 2. Check Ghat compatibility
-    if data.ghat:
-        agent_ghat = data.ghat.strip().replace(" Ghat", "").lower()
-        booking_ghat = booking.get("ghat", "").strip().replace(" Ghat", "").lower()
-        if agent_ghat and booking_ghat and agent_ghat not in booking_ghat and booking_ghat not in agent_ghat:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Ticket NV-{clean_code} is registered for {booking.get('ghat')} (Current Gate: {data.ghat}). Please ask passenger to board at {booking.get('ghat')}."
-            )
-            
-    # 3. Mark booking as boarded & set boat status to available
-    await db.bookings.update_one(
-        {"booking_id": booking["booking_id"]},
-        {"$set": {"status": "boarded"}}
-    )
-    
-    if booking.get("boat_id"):
-        await db.boats.update_one(
-            {"boat_id": booking["boat_id"]},
-            {"$set": {"status": "available"}}
-        )
-        
-    return {
-        "success": True,
-        "message": f"Successfully verified! Boarded {booking.get('user_name', 'Passenger')} on {booking.get('boat_name', 'Boat')}.",
-        "booking": {**booking, "status": "boarded"}
-    }
 
 
 # ══════════════════════════════════════════
@@ -1057,7 +855,7 @@ async def seed_database():
                 "tags": ["New", "Festive Special"],
                 "ride_tags": ["Full Tour", "4 Seater"],
                 "status": "available",
-                "emoji": "⛵",
+                "emoji": "🛶",
                 "sky_colors": ["#fef3c7", "#fde68a", "#6ee7b7"],
                 "water_colors": ["#059669", "#065f46"],
                 "busy_time": None
@@ -1076,291 +874,11 @@ async def seed_database():
                 "dist": "500m",
                 "tags": [],
                 "ride_tags": ["Aarti Ride", "5 Seater"],
-                "status": "available",
+                "status": "busy",
                 "emoji": "🚤",
                 "sky_colors": ["#c7d2fe", "##818cf8"],
                 "water_colors": ["#4f46e5", "#312e81"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_005",
-                "name": "Alaknanda Cruise",
-                "boat_code": "#CR-001",
-                "boatman_name": "NaavGo Captain",
-                "boatman_id": "user_test_boatman",
-                "rides": 95,
-                "price": 750,
-                "rating": 4.9,
-                "seats": 50,
-                "ghat": "Assi",
-                "dist": "100m",
-                "tags": ["Sponsored", "NaavGo Choice"],
-                "ride_tags": ["Luxury Cruise", "50 Seater"],
-                "status": "available",
-                "emoji": "🛳️",
-                "sky_colors": ["#1e3a8a", "#3b82f6"],
-                "water_colors": ["#1d4ed8", "#1e40af"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_006",
-                "name": "Bhagirathi Cruise",
-                "boat_code": "#CR-002",
-                "boatman_name": "NaavGo Captain",
-                "boatman_id": "user_test_boatman",
-                "rides": 140,
-                "price": 900,
-                "rating": 5.0,
-                "seats": 65,
-                "ghat": "Dashashwamedh",
-                "dist": "120m",
-                "tags": ["Most Popular"],
-                "ride_tags": ["AC Cruise", "65 Seater"],
-                "status": "available",
-                "emoji": "🚢",
-                "sky_colors": ["#111827", "#1f2937"],
-                "water_colors": ["#1f2937", "#111827"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_007",
-                "name": "Tulsi Rowboat",
-                "boat_code": "#TS-012",
-                "boatman_name": "Manish Sahani",
-                "boatman_id": "user_test_boatman",
-                "rides": 42,
-                "price": 100,
-                "rating": 4.8,
-                "seats": 4,
-                "ghat": "Tulsi",
-                "dist": "80m",
-                "tags": ["Budget Pick"],
-                "ride_tags": ["Row Boat", "4 Seater"],
-                "status": "available",
-                "emoji": "⛵",
-                "sky_colors": ["#ff7e5f", "#feb47b"],
-                "water_colors": ["#feb47b", "#ff7e5f"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_008",
-                "name": "Kashi Express Speedboat",
-                "boat_code": "#TS-015",
-                "boatman_name": "Satish Sahani",
-                "boatman_id": "user_test_boatman",
-                "rides": 112,
-                "price": 220,
-                "rating": 4.9,
-                "seats": 6,
-                "ghat": "Tulsi",
-                "dist": "130m",
-                "tags": ["Fast Ride"],
-                "ride_tags": ["Speedboat", "6 Seater"],
-                "status": "available",
-                "emoji": "🚤",
-                "sky_colors": ["#3a7bd5", "#3a6073"],
-                "water_colors": ["#3a6073", "#3a7bd5"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_009",
-                "name": "Narmada River Cruise",
-                "boat_code": "#TS-020",
-                "boatman_name": "NaavGo Captain",
-                "boatman_id": "user_test_boatman",
-                "rides": 60,
-                "price": 800,
-                "rating": 5.0,
-                "seats": 40,
-                "ghat": "Tulsi",
-                "dist": "140m",
-                "tags": ["Comfort Select"],
-                "ride_tags": ["Mini Cruise", "40 Seater"],
-                "status": "available",
-                "emoji": "🛳️",
-                "sky_colors": ["#000428", "#004e92"],
-                "water_colors": ["#004e92", "#000428"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_010",
-                "name": "Assi Speedboat Runner",
-                "boat_code": "#AG-014",
-                "boatman_name": "Amit Nishad",
-                "boatman_id": "user_test_boatman",
-                "rides": 145,
-                "price": 250,
-                "rating": 4.7,
-                "seats": 8,
-                "ghat": "Assi",
-                "dist": "210m",
-                "tags": ["Popular Speedboat"],
-                "ride_tags": ["Motorboat", "8 Seater"],
-                "status": "available",
-                "emoji": "🚤",
-                "sky_colors": ["#11998e", "#38ef7d"],
-                "water_colors": ["#38ef7d", "#11998e"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_011",
-                "name": "Shamshan Traditional Row",
-                "boat_code": "#MK-005",
-                "boatman_name": "Kailash Nishad",
-                "boatman_id": "user_test_boatman",
-                "rides": 310,
-                "price": 130,
-                "rating": 4.8,
-                "seats": 5,
-                "ghat": "Manikarnika",
-                "dist": "180m",
-                "tags": ["Traditional Selection"],
-                "ride_tags": ["Rowboat", "5 Seater"],
-                "status": "available",
-                "emoji": "⛵",
-                "sky_colors": ["#4b6cb7", "#182848"],
-                "water_colors": ["#182848", "#4b6cb7"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_012",
-                "name": "Ganga Aarti Manikarnika Cruise",
-                "boat_code": "#MK-009",
-                "boatman_name": "NaavGo Captain",
-                "boatman_id": "user_test_boatman",
-                "rides": 85,
-                "price": 700,
-                "rating": 4.9,
-                "seats": 35,
-                "ghat": "Manikarnika",
-                "dist": "220m",
-                "tags": ["Aarti Special"],
-                "ride_tags": ["Luxury Cruise", "35 Seater"],
-                "status": "available",
-                "emoji": "🛳️",
-                "sky_colors": ["#833ab4", "#fd1d1d", "#fcb045"],
-                "water_colors": ["#fd1d1d", "#833ab4"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_013",
-                "name": "Bhole Nath Naav",
-                "boat_code": "#DG-091",
-                "boatman_name": "Ramesh Nishad",
-                "boatman_id": "user_test_boatman",
-                "rides": 150,
-                "price": 100,
-                "rating": 4.8,
-                "seats": 6,
-                "ghat": "Dashashwamedh",
-                "dist": "250m",
-                "tags": ["Budget Pick"],
-                "ride_tags": ["Row Boat", "6 Seater"],
-                "status": "available",
-                "emoji": "⛵",
-                "sky_colors": ["#0284c7", "#0ea5e9"],
-                "water_colors": ["#0369a1", "#0284c7"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_014",
-                "name": "Subah-e-Banaras Naav",
-                "boat_code": "#AG-022",
-                "boatman_name": "Amit Nishad",
-                "boatman_id": "user_test_boatman",
-                "rides": 85,
-                "price": 120,
-                "rating": 4.9,
-                "seats": 4,
-                "ghat": "Assi",
-                "dist": "180m",
-                "tags": ["Highly Rated"],
-                "ride_tags": ["Row Boat", "4 Seater"],
-                "status": "available",
-                "emoji": "🚣",
-                "sky_colors": ["#f59e0b", "#d97706"],
-                "water_colors": ["#b45309", "#78350f"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_015",
-                "name": "Assi Superjet Motorboat",
-                "boat_code": "#AG-045",
-                "boatman_name": "Kailash Sahani",
-                "boatman_id": "user_test_boatman",
-                "rides": 120,
-                "price": 300,
-                "rating": 4.6,
-                "seats": 10,
-                "ghat": "Assi",
-                "dist": "300m",
-                "tags": ["Fast Ride"],
-                "ride_tags": ["Motorboat", "10 Seater"],
-                "status": "available",
-                "emoji": "🚤",
-                "sky_colors": ["#3b82f6", "#1d4ed8"],
-                "water_colors": ["#1e3a8a", "#172554"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_016",
-                "name": "Tulsi Heritage Rowboat",
-                "boat_code": "#TS-033",
-                "boatman_name": "Manish Sahani",
-                "boatman_id": "user_test_boatman",
-                "rides": 30,
-                "price": 90,
-                "rating": 4.7,
-                "seats": 4,
-                "ghat": "Tulsi",
-                "dist": "90m",
-                "tags": ["Traditional Selection"],
-                "ride_tags": ["Row Boat", "4 Seater"],
-                "status": "available",
-                "emoji": "⛵",
-                "sky_colors": ["#10b981", "#059669"],
-                "water_colors": ["#047857", "#064e3b"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_017",
-                "name": "Tulsi Express Speedboat",
-                "boat_code": "#TS-055",
-                "boatman_name": "Satish Sahani",
-                "boatman_id": "user_test_boatman",
-                "rides": 95,
-                "price": 280,
-                "rating": 4.8,
-                "seats": 8,
-                "ghat": "Tulsi",
-                "dist": "140m",
-                "tags": ["Speedy"],
-                "ride_tags": ["Motorboat", "8 Seater"],
-                "status": "available",
-                "emoji": "🚤",
-                "sky_colors": ["#f43f5e", "#e11d48"],
-                "water_colors": ["#be123c", "#881337"],
-                "busy_time": None
-            },
-            {
-                "boat_id": "boat_018",
-                "name": "Kashi Speedboat Runner",
-                "boat_code": "#DG-099",
-                "boatman_name": "Suresh Bind",
-                "boatman_id": "user_test_boatman",
-                "rides": 180,
-                "price": 320,
-                "rating": 4.8,
-                "seats": 12,
-                "ghat": "Dashashwamedh",
-                "dist": "280m",
-                "tags": ["Express Ride"],
-                "ride_tags": ["Motorboat", "12 Seater"],
-                "status": "available",
-                "emoji": "🚤",
-                "sky_colors": ["#06b6d4", "#0891b2"],
-                "water_colors": ["#0e7490", "#155e75"],
-                "busy_time": None
+                "busy_time": "20 min"
             }
         ]
         
@@ -1454,7 +972,7 @@ async def upload_boat(data: BoatUploadRequest, request: Request):
             "dist": "—",
             "tags": [],
             "ride_tags": ride_tags,
-            "status": "pending_verification",  # Admin must approve
+            "status": "available",  # Auto-approved for demo
             "emoji": EMOJI_MAP.get(data.boat_type, "⛵"),
             "sky_colors": ["#1a3a6b", "#0f2d6b"],
             "water_colors": ["#1e5799", "#1e3a8a"],
